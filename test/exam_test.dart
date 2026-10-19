@@ -79,6 +79,61 @@ void main() {
     );
     expect(GradeService.encodeLogin('a', 'b', '', '999'), 'a%%%b%%% ');
   });
+
+  test('exam slots parse real payload into week/day/section blocks', () {
+    final slots = ExamSlot.fromPayload({
+      'data': [
+        {
+          'xnxq01id': '2026-2027-1',
+          'kc_mc': '资源与环境遥感',
+          'kszc': '10',
+          'ksxq': '2',
+          'ksjc': '07-08',
+          'js_mc': 'J14-121室',
+          'ks_mc': '提前期末考试',
+          'kssj': '2026-11-03 16:10-18:00',
+        },
+        {
+          'kc_mc': '无节次的考试',
+          'kszc': '11',
+          'ksxq': '3',
+          'ksjc': '2',
+          'kssj': '2026-11-10 08:30-10:30',
+        },
+        {'kszc': 'bad', 'ksxq': '9', 'ksjc': '1'},
+      ],
+    });
+    expect(slots.length, 2);
+    expect(slots[0].week, 10);
+    expect(slots[0].dayOfWeek, 2);
+    expect(slots[0].beginSection, 7);
+    expect(slots[0].length, 2);
+    expect(slots[0].courseName, '资源与环境遥感');
+    expect(slots[0].room, 'J14-121室');
+    expect(slots[1].beginSection, 2);
+    expect(slots[1].length, 2); // 08:30-10:30 ≈ 2h
+  });
+
+  testWidgets('schedule page reads exam cache without crashing', (tester) async {
+    SharedPreferences.setMockInitialValues({
+      examCacheKey: jsonEncode({
+        'data': [
+          {
+            'kc_mc': '资源与环境遥感',
+            'kszc': '10',
+            'ksxq': '2',
+            'ksjc': '07-08',
+            'js_mc': 'J14-121室',
+            'kssj': '2026-11-03 16:10-18:00',
+          },
+        ],
+      }),
+    });
+    await tester.pumpWidget(const MyApp());
+    await tester.pumpAndSettle();
+    expect(find.byTooltip('切换课表'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
   testWidgets('cached grades scroll, expand and refresh explicitly', (
     tester,
   ) async {

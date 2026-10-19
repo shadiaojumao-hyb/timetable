@@ -96,6 +96,72 @@ class ScheduleData {
   final String termTitle;
 }
 
+/// 教务系统“考试安排”在课程表上的占位块。
+class ExamSlot {
+  const ExamSlot({
+    required this.week,
+    required this.dayOfWeek,
+    required this.beginSection,
+    required this.length,
+    required this.courseName,
+    required this.room,
+    required this.timeText,
+  });
+
+  final int week;
+  final int dayOfWeek; // 1 = 周一 … 7 = 周日
+  final int beginSection;
+  final int length; // 占几节课的高度
+  final String courseName;
+  final String room;
+  final String timeText;
+
+  /// 从教务系统“考试安排”缓存中解析出可落到课程表上的考试块。
+  static List<ExamSlot> fromPayload(Map<String, dynamic>? payload) {
+    final rows = (payload?['data'] as List? ?? []).whereType<Map>();
+    final slots = <ExamSlot>[];
+    for (final row in rows) {
+      final week = int.tryParse('${row['kszc'] ?? ''}');
+      final day = int.tryParse('${row['ksxq'] ?? ''}');
+      final sectionRaw = '${row['ksjc'] ?? ''}'.trim();
+      if (week == null || day == null || day < 1 || day > 7) continue;
+      final range = sectionRaw.split(RegExp(r'[-—–~至]'));
+      final begin = int.tryParse(range.first.trim()) ?? 0;
+      if (begin <= 0) continue;
+      var end = range.length > 1 ? int.tryParse(range.last.trim()) : null;
+      // 按考试时长估算占几行：N 小时即占 N 节（begin … begin+N-1）。
+      end ??= begin + _defaultLengthFromTime('${row['kssj'] ?? ''}') - 1;
+      if (end < begin) end = begin;
+      final name = '${row['kc_mc'] ?? ''}'.trim();
+      slots.add(
+        ExamSlot(
+          week: week,
+          dayOfWeek: day,
+          beginSection: begin,
+          length: (end - begin + 1).clamp(1, 4).toInt(),
+          courseName: name.isEmpty ? '考试' : name,
+          room: '${row['js_mc'] ?? ''}'.trim(),
+          timeText: '${row['kssj'] ?? ''}'.trim(),
+        ),
+      );
+    }
+    return slots;
+  }
+
+  /// 根据 “09:00-11:00” 这类时间段估算占几行；课程表里 2 行约 2 小时。
+  static int _defaultLengthFromTime(String kssj) {
+    final match = RegExp(
+      r'(\d{1,2}):(\d{2})\s*[-–~]\s*(\d{1,2}):(\d{2})',
+    ).firstMatch(kssj);
+    if (match == null) return 2;
+    final start = int.parse(match.group(1)!) * 60 + int.parse(match.group(2)!);
+    final end = int.parse(match.group(3)!) * 60 + int.parse(match.group(4)!);
+    var minutes = end - start;
+    if (minutes <= 0) minutes += 24 * 60;
+    return (minutes / 60).round().clamp(1, 4).toInt();
+  }
+}
+
 class ScheduleConfig {
   const ScheduleConfig({
     required this.url,
@@ -341,11 +407,27 @@ class _SchedulePageState extends State<SchedulePage> {
   bool _loading = true;
   bool _showFocus = true;
   String? _error;
+  List<ExamSlot> _examSlots = [];
 
   @override
   void initState() {
     super.initState();
     _loadSavedConfigAndSchedule();
+    _loadExamSlots();
+  }
+
+  /// 考试安排由“考试信息”页获取并缓存到本地，这里只读缓存，
+  /// 切回课程表页时重新读取，以便展示最新考试占位。
+  Future<void> _loadExamSlots() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final raw = prefs.getString(examCacheKey);
+      final data = raw == null ? null : jsonDecode(raw) as Map<String, dynamic>;
+      if (!mounted) return;
+      setState(() => _examSlots = ExamSlot.fromPayload(data));
+    } catch (_) {
+      if (mounted) setState(() => _examSlots = []);
+    }
   }
 
   Future<void> _loadSavedConfigAndSchedule() async {
@@ -534,6 +616,7 @@ class _SchedulePageState extends State<SchedulePage> {
                         schedule: schedule!,
                         selectedWeek: _selectedWeek,
                         loading: _loading,
+                        exams: _examSlots,
                         onPreviousWeek: () => _loadWeek(_selectedWeek - 1),
                         onNextWeek: () => _loadWeek(_selectedWeek + 1),
                         onShowFocus: _nextLesson == null
@@ -564,10 +647,14 @@ class _SchedulePageState extends State<SchedulePage> {
             ? const Color(0xff2c7be5)
             : const Color(0xff5f6b7a),
       ),
-      onPressed: () => setState(() {
-        _examSelected = exam;
-        _examOpened |= exam;
-      }),
+      onPressed: () {
+        setState(() {
+          _examSelected = exam;
+          _examOpened |= exam;
+        });
+        // 切回课程表时重新读取考试安排缓存，展示最新考试占位。
+        if (!exam) _loadExamSlots();
+      },
       child: Text(label, maxLines: 1, overflow: TextOverflow.ellipsis),
     ),
   );
@@ -675,6 +762,7 @@ class _ScheduleBoard extends StatelessWidget {
     required this.schedule,
     required this.selectedWeek,
     required this.loading,
+    required this.exams,
     required this.onPreviousWeek,
     required this.onNextWeek,
     required this.onShowFocus,
@@ -683,12 +771,14 @@ class _ScheduleBoard extends StatelessWidget {
   final ScheduleData schedule;
   final int selectedWeek;
   final bool loading;
+  final List<ExamSlot> exams;
   final VoidCallback onPreviousWeek;
   final VoidCallback onNextWeek;
   final VoidCallback? onShowFocus;
 
   @override
   Widget build(BuildContext context) {
+    final examCount = exams.where((e) => e.week == selectedWeek).length;
     return Column(
       children: [
         Padding(
@@ -707,7 +797,8 @@ class _ScheduleBoard extends StatelessWidget {
                     ),
                     const SizedBox(height: 4),
                     Text(
-                      '第$selectedWeek周 · ${schedule.lessons.length}节课',
+                      '第$selectedWeek周 · ${schedule.lessons.length}节课'
+                      '${examCount > 0 ? ' · $examCount场考试' : ''}',
                       style: const TextStyle(color: Color(0xff5f6b7a)),
                     ),
                   ],
@@ -739,16 +830,17 @@ class _ScheduleBoard extends StatelessWidget {
           ),
         ),
         if (loading) const LinearProgressIndicator(minHeight: 2),
-        Expanded(child: _ScheduleGrid(schedule: schedule)),
+        Expanded(child: _ScheduleGrid(schedule: schedule, exams: exams)),
       ],
     );
   }
 }
 
 class _ScheduleGrid extends StatelessWidget {
-  const _ScheduleGrid({required this.schedule});
+  const _ScheduleGrid({required this.schedule, required this.exams});
 
   final ScheduleData schedule;
+  final List<ExamSlot> exams;
 
   @override
   Widget build(BuildContext context) {
@@ -802,6 +894,13 @@ class _ScheduleGrid extends StatelessWidget {
                               rowHeight,
                               displayMaxLength,
                             ),
+                          ..._examCards(
+                            context,
+                            timeColumnWidth,
+                            dayColumnWidth,
+                            rowHeight,
+                            displayMaxLength,
+                          ),
                         ],
                       ),
                     ),
@@ -968,6 +1067,47 @@ class _ScheduleGrid extends StatelessWidget {
       showDragHandle: true,
       isScrollControlled: true,
       builder: (context) => _CourseDetailSheet(lesson: lesson),
+    );
+  }
+
+  List<Widget> _examCards(
+    BuildContext context,
+    double timeColumnWidth,
+    double dayColumnWidth,
+    double rowHeight,
+    int displayMaxLength,
+  ) {
+    final cards = <Widget>[];
+    for (final exam in exams) {
+      // 只在与课表选中周次一致时展示；超出可视节次的考试不落块。
+      if (exam.week != schedule.selectedWeek) continue;
+      if (exam.beginSection > displayMaxLength) continue;
+      final visibleRows = displayMaxLength - exam.beginSection + 1;
+      final spanRows = visibleRows < exam.length ? visibleRows : exam.length;
+      cards.add(
+        Positioned(
+          left:
+              timeColumnWidth + (exam.dayOfWeek - 1) * dayColumnWidth + 3,
+          top: (exam.beginSection - 1) * rowHeight + 3,
+          width: dayColumnWidth - 6,
+          height: spanRows * rowHeight - 6,
+          child: _ExamBlock(
+            exam: exam,
+            compact: dayColumnWidth < 58,
+            onTap: () => _showExamDetail(context, exam),
+          ),
+        ),
+      );
+    }
+    return cards;
+  }
+
+  void _showExamDetail(BuildContext context, ExamSlot exam) {
+    showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      isScrollControlled: true,
+      builder: (context) => _ExamDetailSheet(exam: exam),
     );
   }
 }
@@ -1193,6 +1333,200 @@ class _CourseBlock extends StatelessWidget {
               ],
             ),
           ),
+        ),
+      ),
+    );
+  }
+}
+
+/// 考试占位块：警示红 + 白色斜纹 + “考试”角标，与彩色课程块明确区分。
+class _ExamBlock extends StatelessWidget {
+  const _ExamBlock({
+    required this.exam,
+    required this.compact,
+    required this.onTap,
+  });
+
+  final ExamSlot exam;
+  final bool compact;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(7),
+        child: DecoratedBox(
+          decoration: BoxDecoration(
+            color: const Color(0xffe63946),
+            borderRadius: BorderRadius.circular(7),
+            border: Border.all(
+              color: Colors.white.withValues(alpha: 0.9),
+              width: 1.4,
+            ),
+            boxShadow: const [
+              BoxShadow(
+                blurRadius: 6,
+                color: Color(0x4d000000),
+                offset: Offset(0, 2),
+              ),
+            ],
+          ),
+          child: ClipRRect(
+            borderRadius: BorderRadius.circular(6),
+            child: CustomPaint(
+              painter: _DiagonalStripePainter(),
+              child: Padding(
+                padding: EdgeInsets.all(compact ? 4 : 6),
+                child: DefaultTextStyle(
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontSize: compact ? 8.5 : 10,
+                    height: 1.12,
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(
+                            Icons.flag,
+                            size: compact ? 9 : 11,
+                            color: Colors.white,
+                          ),
+                          const SizedBox(width: 2),
+                          Text(
+                            '考试',
+                            style: TextStyle(
+                              fontWeight: FontWeight.w900,
+                              fontSize: compact ? 8.5 : 10,
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        exam.courseName,
+                        style: TextStyle(fontWeight: FontWeight.w800),
+                        maxLines: compact ? 3 : 2,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                      const Spacer(),
+                      if (exam.timeText.isNotEmpty)
+                        Text(
+                          exam.timeText,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(fontSize: compact ? 8 : 9),
+                        ),
+                      if (exam.room.isNotEmpty)
+                        Text(
+                          exam.room,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            fontSize: compact ? 8 : 9,
+                            fontWeight: FontWeight.w900,
+                          ),
+                        ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// 白色半透明斜纹，强化考试块与课程块的视觉差异。
+class _DiagonalStripePainter extends CustomPainter {
+  @override
+  void paint(Canvas canvas, Size size) {
+    final paint = Paint()
+      ..color = Colors.white.withValues(alpha: 0.16)
+      ..strokeWidth = 5;
+    const spacing = 13.0;
+    for (var x = -size.height; x < size.width + size.height; x += spacing) {
+      canvas.drawLine(
+        Offset(x, size.height),
+        Offset(x + size.height, 0),
+        paint,
+      );
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
+}
+
+class _ExamDetailSheet extends StatelessWidget {
+  const _ExamDetailSheet({required this.exam});
+
+  final ExamSlot exam;
+
+  @override
+  Widget build(BuildContext context) {
+    const names = ['周一', '周二', '周三', '周四', '周五', '周六', '周日'];
+    final weekday = exam.dayOfWeek >= 1 && exam.dayOfWeek <= 7
+        ? names[exam.dayOfWeek - 1]
+        : '周${exam.dayOfWeek}';
+    return SafeArea(
+      child: Padding(
+        padding: EdgeInsets.fromLTRB(
+          20,
+          4,
+          20,
+          20 + MediaQuery.viewInsetsOf(context).bottom,
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                const Icon(Icons.flag, color: Color(0xffe63946)),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    exam.courseName,
+                    style: Theme.of(context).textTheme.headlineSmall?.copyWith(
+                      fontWeight: FontWeight.w900,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 18),
+            _InfoLine(
+              icon: Icons.event,
+              text: exam.timeText.isEmpty ? '—' : exam.timeText,
+            ),
+            _InfoLine(
+              icon: Icons.location_on,
+              text: exam.room.isEmpty ? '—' : exam.room,
+            ),
+            _InfoLine(
+              icon: Icons.calendar_month,
+              text:
+                  '第${exam.week}周 · $weekday · 第${exam.beginSection}'
+                  '-${exam.beginSection + exam.length - 1}节',
+            ),
+            const SizedBox(height: 8),
+            SizedBox(
+              width: double.infinity,
+              child: FilledButton.icon(
+                onPressed: () => Navigator.pop(context),
+                icon: const Icon(Icons.check),
+                label: const Text('知道了'),
+              ),
+            ),
+          ],
         ),
       ),
     );
