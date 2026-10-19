@@ -37,5 +37,14 @@
 ## 考试时间信息
 - [x] 已完成
 - 上半区显示当前学期的结课考试安排，包含课程、考试日期时间、地点、考试类型及周次节次，按考试时间排列并支持内部滚动。
-- 沿用“时间.py”的 `/jsxsd/xsks/xsstk_list` 查询，自动计算当前学期并逐页读取。右上角刷新同时更新考试安排和成绩，各自保存缓存；单个接口失败会保留对应的旧数据。首次升级且已有成绩缓存时，点击刷新获取考试安排。
+
+## 应用截图
+
+| 图1 应用开屏界面 | 图2 课程表界面 |
+|:---:|:---:|
+|![图1](https://github.com/user-attachments/assets/7752e03f-a3da-4bd4-b1d4-14117765dafc)|![图2](https://github.com/user-attachments/assets/9c270938-39b5-43fe-8e71-240cf62582ce)|
+| 图3 考试信息界面 | 图4 课程表中展示考试时间 |
+|![图3](https://github.com/user-attachments/assets/5028a6a9-0113-4322-8bd5-7327fc170f32)|![图4](https://github.com/user-attachments/assets/6b09435f-6526-487a-b8c5-122e75a73391)|
+
+
 
