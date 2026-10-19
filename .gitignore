@@ -11,7 +11,8 @@
 .svn/
 .swiftpm/
 migrate_working_dir/
-
+成绩.py
+时间.py
 # IntelliJ related
 *.iml
 *.ipr
