@@ -141,7 +141,27 @@ class GradeService {
     // The grades endpoint validates the subsystem session, not just a redirect.
   }
 
-  Future<Map<String, dynamic>> fetchGrades() async {
+  Future<Map<String, dynamic>> fetchGrades() =>
+      _fetchList('/jsxsd/kscj/cjcx_list', {'kksj': ''}, '成绩');
+
+  static String currentExamTerm([DateTime? date]) {
+    final now = date ?? DateTime.now();
+    final startYear = now.month >= 8 ? now.year : now.year - 1;
+    final semester = now.month >= 2 && now.month <= 7 ? 2 : 1;
+    return '$startYear-${startYear + 1}-$semester';
+  }
+
+  Future<Map<String, dynamic>> fetchExams({String? term}) => _fetchList(
+    '/jsxsd/xsks/xsstk_list',
+    {'xnxqid': term ?? currentExamTerm()},
+    '考试安排',
+  );
+
+  Future<Map<String, dynamic>> _fetchList(
+    String path,
+    Map<String, String> parameters,
+    String label,
+  ) async {
     final rows = <dynamic>[];
     Map<String, dynamic>? result;
     for (var page = 1; page <= 500; page++) {
@@ -149,7 +169,7 @@ class GradeService {
         queryParameters: {
           'pageNum': '$page',
           'pageSize': '100',
-          'kksj': '',
+          ...parameters,
           'kcxz': '',
           'kcsx': '',
           'kcmc': '',
@@ -157,7 +177,7 @@ class GradeService {
           'sfxsbcxq': '1',
         },
       ).query;
-      final text = (await _request('/jsxsd/kscj/cjcx_list?$query')).data ?? '';
+      final text = (await _request('$path?$query')).data ?? '';
       if (text.contains('请先登录') ||
           RegExp(
             r'logon|userAccount|type\s*=\s*["\x27]password',
@@ -169,17 +189,17 @@ class GradeService {
       try {
         decoded = jsonDecode(text);
       } catch (_) {
-        throw const FormatException('成绩接口未返回有效数据，请稍后刷新');
+        throw FormatException('$label接口未返回有效数据，请稍后刷新');
       }
       if (decoded is! Map<String, dynamic>) {
-        throw const FormatException('成绩数据格式异常');
+        throw FormatException('$label数据格式异常');
       }
       if ('${decoded['code']}' != '0') {
-        final message = '${decoded['msg'] ?? '获取成绩失败'}';
+        final message = '${decoded['msg'] ?? '获取$label失败'}';
         if (RegExp('登录|会话|超时|认证').hasMatch(message)) throw LoginRequired();
         throw FormatException(message);
       }
-      if (decoded['data'] is! List) throw const FormatException('成绩列表格式异常');
+      if (decoded['data'] is! List) throw FormatException('$label列表格式异常');
       result ??= decoded;
       final batch = decoded['data'] as List;
       rows.addAll(batch);
@@ -189,11 +209,12 @@ class GradeService {
         return {
           ...result,
           'data': rows,
+          ...parameters,
           'savedAt': DateTime.now().toIso8601String(),
         };
       }
-      if (batch.isEmpty) throw const FormatException('成绩分页不完整，请重试');
+      if (batch.isEmpty) throw FormatException('$label分页不完整，请重试');
     }
-    throw const FormatException('成绩分页数量异常');
+    throw FormatException('$label分页数量异常');
   }
 }

@@ -3,12 +3,20 @@ import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'grade_service.dart';
+import 'exam_credentials.dart';
 
 const gradeCacheKey = 'exam_grades_v1';
+const examCacheKey = 'exam_times_v1';
+const _cacheAccountKey = 'exam_cache_account';
 
 class ExamPage extends StatefulWidget {
-  const ExamPage({super.key, this.service});
+  const ExamPage({
+    super.key,
+    this.service,
+    this.credentials = const ExamCredentialStore(),
+  });
   final GradeService? service;
+  final ExamCredentialStore credentials;
   @override
   State<ExamPage> createState() => ExamPageState();
 }
@@ -16,6 +24,8 @@ class ExamPage extends StatefulWidget {
 class ExamPageState extends State<ExamPage> {
   late final GradeService _service = widget.service ?? GradeService();
   Map<String, dynamic>? _cache;
+  Map<String, dynamic>? _exams;
+  String? _examError;
   bool _busy = true;
   bool _expanded = false;
   String? _error;
@@ -38,18 +48,32 @@ class ExamPageState extends State<ExamPage> {
   Future<void> _restore() async {
     try {
       final prefs = await SharedPreferences.getInstance();
-      final raw = prefs.getString(gradeCacheKey);
-      if (raw != null) {
-        final decoded = jsonDecode(raw) as Map<String, dynamic>;
-        if (decoded['data'] is! List) throw const FormatException();
-        _cache = decoded;
+      for (final key in [gradeCacheKey, examCacheKey]) {
+        final raw = prefs.getString(key);
+        if (raw == null) continue;
+        try {
+          final data = jsonDecode(raw) as Map<String, dynamic>;
+          if (data['data'] is! List) throw const FormatException();
+          if (key == gradeCacheKey) {
+            _cache = data;
+          } else {
+            _exams = data;
+          }
+        } catch (_) {
+          if (key == gradeCacheKey) {
+            _error = '本地成绩无法读取，请刷新重试';
+          } else {
+            _examError = '本地考试安排无法读取，请刷新重试';
+          }
+        }
       }
     } catch (_) {
-      _error = '本地成绩无法读取，请刷新重新获取';
+      _error = '本地缓存无法读取，请刷新重试';
     }
     if (!mounted) return;
     setState(() => _busy = false);
-    if (_cache == null) await refresh();
+    // Existing grade-only caches stay offline until the user refreshes.
+    if (_cache == null && _exams == null) await refresh();
   }
 
   Future<void> refresh() async {
@@ -57,14 +81,44 @@ class ExamPageState extends State<ExamPage> {
     setState(() {
       _busy = true;
       _error = null;
+      _examError = null;
     });
     try {
       Map<String, dynamic>? data;
+      String initialAccount = '';
+      String? loginError;
       if (_service.hasSession) {
         try {
-          data = await _service.fetchGrades();
+          data = await _fetchInformation(_service);
         } on LoginRequired {
-          /* Prompt below. */
+          /* Attempt saved login below. */
+        }
+      }
+      if (data == null) {
+        SavedLogin? saved;
+        try {
+          saved = await widget.credentials.read();
+        } catch (_) {
+          loginError = '无法读取保存的登录信息，请重新登录';
+        }
+        if (saved != null) {
+          initialAccount = saved.account;
+          try {
+            await _service.login(saved.account, saved.password);
+            data = {
+              ...await _fetchInformation(_service),
+              'account': saved.account,
+            };
+          } on LoginRequired {
+            try {
+              await widget.credentials.clear();
+            } catch (_) {
+              /* Manual login remains available. */
+            }
+            loginError = '保存的登录信息已失效，请重新输入账号密码';
+          } catch (error) {
+            loginError = '自动登录未完成：${_friendlyError(error)}';
+          }
         }
       }
       if (data == null) {
@@ -72,24 +126,130 @@ class ExamPageState extends State<ExamPage> {
         data = await showDialog<Map<String, dynamic>>(
           context: context,
           barrierDismissible: false,
-          builder: (_) => _GradeLoginDialog(service: _service),
+          builder: (_) => _GradeLoginDialog(
+            service: _service,
+            credentials: widget.credentials,
+            initialAccount: initialAccount,
+            initialError: loginError,
+          ),
         );
       }
       if (data != null) {
         if (!mounted) return;
-        setState(() => _cache = data);
+        final prefs = await SharedPreferences.getInstance();
+        final account = data['account'] as String?;
+        if (account != null && prefs.getString(_cacheAccountKey) != account) {
+          _cache = null;
+          _exams = null;
+          await prefs.remove(gradeCacheKey);
+          await prefs.remove(examCacheKey);
+          await prefs.setString(_cacheAccountKey, account);
+        }
+        if (!mounted) return;
+        setState(() {
+          _cache = data!['grades'] as Map<String, dynamic>? ?? _cache;
+          _exams = data['exams'] as Map<String, dynamic>? ?? _exams;
+          _error = data['gradeError'] as String?;
+          _examError = data['examError'] as String?;
+        });
         try {
-          final prefs = await SharedPreferences.getInstance();
-          await prefs.setString(gradeCacheKey, jsonEncode(data));
+          if (data['grades'] != null) {
+            await prefs.setString(gradeCacheKey, jsonEncode(data['grades']));
+          }
+          if (data['exams'] != null) {
+            await prefs.setString(examCacheKey, jsonEncode(data['exams']));
+          }
         } catch (_) {
-          _error = '成绩已获取，但本地保存失败，请稍后刷新重试';
+          _error = '已获取数据，但本地保存失败，请稍后刷新重试';
         }
       }
     } catch (error) {
       _error = _friendlyError(error);
+      _examError = _friendlyError(error);
     } finally {
       if (mounted) setState(() => _busy = false);
     }
+  }
+
+  Widget _examTimes() {
+    final rows = (_exams?['data'] as List? ?? []).whereType<Map>().toList()
+      ..sort((a, b) => '${a['kssj'] ?? ''}'.compareTo('${b['kssj'] ?? ''}'));
+    return Column(
+      children: [
+        if (_busy) const LinearProgressIndicator(minHeight: 2),
+        if (_examError != null)
+          Padding(
+            padding: const EdgeInsets.all(8),
+            child: Text(
+              _examError!,
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(color: Theme.of(context).colorScheme.error),
+            ),
+          ),
+        Expanded(
+          child: rows.isEmpty
+              ? Center(
+                  child: Padding(
+                    padding: const EdgeInsets.all(12),
+                    child: Text(
+                      _exams == null ? '点击右上角刷新获取考试安排' : '暂无结课考试安排',
+                      textAlign: TextAlign.center,
+                    ),
+                  ),
+                )
+              : ListView.separated(
+                  key: const PageStorageKey('exam-times'),
+                  padding: const EdgeInsets.all(12),
+                  itemCount: rows.length,
+                  separatorBuilder: (_, _) => const SizedBox(height: 10),
+                  itemBuilder: (context, index) {
+                    final row = rows[index];
+                    return Container(
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: const Color(0xfff5f8fd),
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(color: const Color(0xffe3e8ef)),
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            _value(row, 'kc_mc'),
+                            style: const TextStyle(
+                              fontWeight: FontWeight.w700,
+                              fontSize: 15,
+                            ),
+                          ),
+                          const SizedBox(height: 6),
+                          Text(
+                            _value(row, 'kssj'),
+                            style: const TextStyle(
+                              color: Color(0xff2c7be5),
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                          const SizedBox(height: 4),
+                          Text('地点：${_value(row, 'js_mc')}'),
+                          Text(
+                            '${_value(row, 'ks_mc')} · ${_value(row, 'xnxq01id')}',
+                          ),
+                          Text(
+                            '第${_value(row, 'kszc')}周 · 星期${_value(row, 'ksxq')} · 第${_value(row, 'ksjc')}节',
+                            style: const TextStyle(
+                              color: Color(0xff5f6b7a),
+                              fontSize: 12,
+                            ),
+                          ),
+                        ],
+                      ),
+                    );
+                  },
+                ),
+        ),
+      ],
+    );
   }
 
   @override
@@ -99,7 +259,7 @@ class ExamPageState extends State<ExamPage> {
       child: Column(
         children: [
           if (!_expanded) ...[
-            Expanded(child: _panel('考试时间', const SizedBox.expand())),
+            Expanded(child: _panel('考试时间', _examTimes())),
             const SizedBox(height: 12),
           ],
           Expanded(
@@ -367,25 +527,56 @@ class ExamPageState extends State<ExamPage> {
   }
 }
 
+Future<Map<String, dynamic>> _fetchInformation(GradeService service) async {
+  final result = <String, dynamic>{};
+  try {
+    result['grades'] = await service.fetchGrades();
+  } on LoginRequired {
+    rethrow;
+  } catch (error) {
+    result['gradeError'] = _friendlyError(error);
+  }
+  try {
+    result['exams'] = await service.fetchExams();
+  } on LoginRequired {
+    rethrow;
+  } catch (error) {
+    result['examError'] = _friendlyError(error);
+  }
+  if (result['grades'] == null && result['exams'] == null) {
+    throw FormatException('${result['gradeError']}；${result['examError']}');
+  }
+  return result;
+}
+
 String _friendlyError(Object error) {
   if (error is LoginRequired) return '账号或密码错误，或登录已失效，请重新登录';
   if (error is DioException) return '连接教务系统失败，请检查网络后重试';
   if (error is FormatException) return error.message;
-  return '获取成绩失败，请稍后重试';
+  return '获取考试信息失败，请稍后重试';
 }
 
 class _GradeLoginDialog extends StatefulWidget {
-  const _GradeLoginDialog({required this.service});
+  const _GradeLoginDialog({
+    required this.service,
+    required this.credentials,
+    this.initialAccount = '',
+    this.initialError,
+  });
+  final ExamCredentialStore credentials;
+  final String initialAccount;
+  final String? initialError;
   final GradeService service;
   @override
   State<_GradeLoginDialog> createState() => _GradeLoginDialogState();
 }
 
 class _GradeLoginDialogState extends State<_GradeLoginDialog> {
-  final _account = TextEditingController();
+  late final _account = TextEditingController(text: widget.initialAccount);
   final _password = TextEditingController();
   bool _busy = false;
-  String? _error;
+  late String? _error = widget.initialError;
+  bool _remember = false;
   @override
   void dispose() {
     _account.dispose();
@@ -405,7 +596,22 @@ class _GradeLoginDialogState extends State<_GradeLoginDialog> {
     });
     try {
       await widget.service.login(_account.text.trim(), _password.text);
-      final data = await widget.service.fetchGrades();
+      final data = {
+        ...await _fetchInformation(widget.service),
+        'account': _account.text.trim(),
+      };
+      try {
+        if (_remember) {
+          await widget.credentials.save(
+            SavedLogin(_account.text.trim(), _password.text),
+          );
+        } else {
+          await widget.credentials.clear();
+        }
+      } catch (_) {
+        if (mounted) setState(() => _error = '登录成功，但保存登录设置失败，请重试或取消勾选');
+        return;
+      }
       if (mounted) Navigator.pop(context, data);
     } catch (error) {
       if (mounted) setState(() => _error = _friendlyError(error));
@@ -426,7 +632,7 @@ class _GradeLoginDialogState extends State<_GradeLoginDialog> {
             mainAxisSize: MainAxisSize.min,
             children: [
               const Text(
-                '首次获取成绩或登录失效时，需要登录。成绩将保存在本机。',
+                '登录后获取成绩和结课考试安排，查询结果将保存在本机。',
                 style: TextStyle(color: Color(0xff5f6b7a)),
               ),
               const SizedBox(height: 20),
@@ -452,6 +658,15 @@ class _GradeLoginDialogState extends State<_GradeLoginDialog> {
                 ),
                 onSubmitted: (_) => _submit(),
               ),
+              CheckboxListTile(
+                value: _remember,
+                contentPadding: EdgeInsets.zero,
+                controlAffinity: ListTileControlAffinity.leading,
+                title: const Text('保存账号密码，下次自动登录'),
+                onChanged: _busy
+                    ? null
+                    : (value) => setState(() => _remember = value ?? false),
+              ),
               if (_error != null)
                 Padding(
                   padding: const EdgeInsets.only(top: 12),
@@ -473,7 +688,7 @@ class _GradeLoginDialogState extends State<_GradeLoginDialog> {
         ),
         FilledButton(
           onPressed: _busy ? null : _submit,
-          child: Text(_busy ? '正在获取…' : '登录并获取成绩'),
+          child: Text(_busy ? '正在获取…' : '登录并获取信息'),
         ),
       ],
     ),

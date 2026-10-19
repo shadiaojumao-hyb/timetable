@@ -5,10 +5,17 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:my_app/exam_page.dart';
 import 'package:my_app/grade_service.dart';
 import 'package:my_app/main.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
 class FakeGrades extends GradeService {
   int requests = 0;
   bool expired = false;
+  @override
+  Future<Map<String, dynamic>> fetchExams({String? term}) async {
+    if (expired) throw LoginRequired();
+    return {'data': []};
+  }
+
   @override
   bool get hasSession => true;
   @override
@@ -24,6 +31,7 @@ class FakeGrades extends GradeService {
 }
 
 void main() {
+  setUp(() => FlutterSecureStorage.setMockInitialValues({}));
   testWidgets(
     'large grade history builds only nearby rows and scrolls to end',
     (tester) async {

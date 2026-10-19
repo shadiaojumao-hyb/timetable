@@ -4,6 +4,48 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:my_app/grade_service.dart';
 
 void main() {
+  test('exam term follows autumn and spring academic semesters', () {
+    expect(GradeService.currentExamTerm(DateTime(2026, 10, 19)), '2026-2027-1');
+    expect(GradeService.currentExamTerm(DateTime(2027, 1, 10)), '2026-2027-1');
+    expect(GradeService.currentExamTerm(DateTime(2027, 3, 10)), '2026-2027-2');
+  });
+  test('exam endpoint uses Python parameters and collects all pages', () async {
+    final dio = Dio();
+    var pages = 0;
+    dio.interceptors.add(
+      InterceptorsWrapper(
+        onRequest: (request, handler) {
+          expect(request.uri.path, '/jsxsd/xsks/xsstk_list');
+          expect(request.uri.queryParameters['xnxqid'], '2026-2027-1');
+          expect(request.uri.queryParameters['xsfs'], 'all');
+          expect(request.uri.queryParameters['sfxsbcxq'], '1');
+          expect(
+            request.headers['Referer'],
+            endsWith('/jsxsd/framework/xsrxkz.html'),
+          );
+          pages++;
+          expect(request.uri.queryParameters['pageNum'], '$pages');
+          handler.resolve(
+            Response<String>(
+              requestOptions: request,
+              statusCode: 200,
+              data: jsonEncode({
+                'code': 0,
+                'data': [
+                  {'kc_mc': '资源与环境遥感', 'kssj': '2026-11-03 16:10-18:00'},
+                ],
+                'count': 2,
+              }),
+            ),
+          );
+        },
+      ),
+    );
+    final data = await GradeService(dio: dio).fetchExams(term: '2026-2027-1');
+    expect(pages, 2);
+    expect((data['data'] as List).length, 2);
+    expect(data['xnxqid'], '2026-2027-1');
+  });
   test(
     'login retains cookies across redirect and combines grade pages',
     () async {
