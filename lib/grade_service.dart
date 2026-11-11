@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
+import 'package:html/parser.dart' as html;
 
 class LoginRequired implements Exception {}
 
@@ -143,6 +144,56 @@ class GradeService {
 
   Future<Map<String, dynamic>> fetchGrades() =>
       _fetchList('/jsxsd/kscj/cjcx_list', {'kksj': ''}, '成绩');
+
+  static const planSummaryColumns = ['通选课类别', '应修学分', '已修学分', '正修读学分'];
+  static const planCourseColumns = [
+    '修读学期', '课程编号', '课程名称', '学分', '通选课类别', '课程性质', '修读情况', '课程成绩',
+  ];
+
+  Future<Map<String, dynamic>> fetchTrainingPlan() async {
+    final response = await _request('/jsxsd/xxwcqk/xxwcqkOnszklb.do?isdb=0');
+    final body = response.data ?? '';
+    if (!body.contains('专业培养方案及教学计划')) {
+      if (body.contains('请先登录') || response.realUri.path.toLowerCase().contains('logon') ||
+          RegExp(r'<input\b[^>]*type\s*=\s*["\x27]?password', caseSensitive: false).hasMatch(body)) {
+        throw LoginRequired();
+      }
+      throw const FormatException('未取得培养方案页面，请稍后刷新');
+    }
+    final document = html.parse(body);
+    final summary = <Map<String, String>>[];
+    final courses = <Map<String, String>>[];
+    Map<String, String>? total;
+    for (final row in document.querySelectorAll('.total-list .list-tr, .sub-table .list-tr')) {
+      var inSummary = false;
+      for (var parent = row.parent; parent != null; parent = parent.parent) {
+        if (parent.classes.contains('total-list')) {
+          inSummary = true;
+          break;
+        }
+      }
+      final fields = inSummary ? planSummaryColumns : planCourseColumns;
+      final cells = row.querySelectorAll('span.list-td-cell');
+      if (cells.length != fields.length) {
+        throw const FormatException('培养方案表格格式已变化，无法读取');
+      }
+      final record = {
+        for (var i = 0; i < fields.length; i++)
+          fields[i]: cells[i].text.replaceAll(RegExp(r'\s+'), ' ').trim(),
+      };
+      if (!inSummary) {
+        courses.add(record);
+      } else if (row.classes.contains('total-tr')) {
+        total = record;
+      } else {
+        summary.add(record);
+      }
+    }
+    if (summary.isEmpty || total == null) {
+      throw const FormatException('未找到完整的学分汇总');
+    }
+    return {'学分汇总': summary, '学分合计': total, '课程明细': courses};
+  }
 
   static String currentExamTerm([DateTime? date]) {
     final now = date ?? DateTime.now();

@@ -126,7 +126,7 @@ class ExamPageState extends State<ExamPage> {
         data = await showDialog<Map<String, dynamic>>(
           context: context,
           barrierDismissible: false,
-          builder: (_) => _GradeLoginDialog(
+          builder: (_) => AcademicLoginDialog(
             service: _service,
             credentials: widget.credentials,
             initialAccount: initialAccount,
@@ -556,22 +556,24 @@ String _friendlyError(Object error) {
   return '获取考试信息失败，请稍后重试';
 }
 
-class _GradeLoginDialog extends StatefulWidget {
-  const _GradeLoginDialog({
+class AcademicLoginDialog extends StatefulWidget {
+  const AcademicLoginDialog({
     required this.service,
     required this.credentials,
     this.initialAccount = '',
     this.initialError,
+    this.loadData,
   });
   final ExamCredentialStore credentials;
   final String initialAccount;
   final String? initialError;
+  final Future<Map<String, dynamic>> Function()? loadData;
   final GradeService service;
   @override
-  State<_GradeLoginDialog> createState() => _GradeLoginDialogState();
+  State<AcademicLoginDialog> createState() => AcademicLoginDialogState();
 }
 
-class _GradeLoginDialogState extends State<_GradeLoginDialog> {
+class AcademicLoginDialogState extends State<AcademicLoginDialog> {
   late final _account = TextEditingController(text: widget.initialAccount);
   final _password = TextEditingController();
   bool _busy = false;
@@ -597,7 +599,7 @@ class _GradeLoginDialogState extends State<_GradeLoginDialog> {
     try {
       await widget.service.login(_account.text.trim(), _password.text);
       final data = {
-        ...await _fetchInformation(widget.service),
+        ...await (widget.loadData?.call() ?? _fetchInformation(widget.service)),
         'account': _account.text.trim(),
       };
       try {
@@ -631,8 +633,9 @@ class _GradeLoginDialogState extends State<_GradeLoginDialog> {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              const Text(
-                '登录后获取成绩和结课考试安排，查询结果将保存在本机。',
+              Text(widget.loadData == null
+                    ? '登录后获取成绩和结课考试安排，查询结果将保存在本机。'
+                    : '使用考试信息的教务账号登录后，查看培养方案和学分完成情况。',
                 style: TextStyle(color: Color(0xff5f6b7a)),
               ),
               const SizedBox(height: 20),
@@ -694,3 +697,6 @@ class _GradeLoginDialogState extends State<_GradeLoginDialog> {
     ),
   );
 }
+
+
+

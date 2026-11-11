@@ -5,6 +5,8 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'exam_page.dart';
+import 'grade_service.dart';
+import 'training_plan_page.dart';
 
 const _scheduleUrlHint =
     'https://kb.chaoxing.com/res/pc/curriculum/schedule.html?curriculumUuid=你的课表UUID&currentCampusId=';
@@ -396,7 +398,10 @@ class SchedulePage extends StatefulWidget {
 }
 
 class _SchedulePageState extends State<SchedulePage> {
-  bool _examSelected = false;
+  int _selectedPage = 0;
+  final _academicService = GradeService();
+  final _planKey = GlobalKey<TrainingPlanPageState>();
+  bool _planOpened = false;
   bool _examOpened = false;
   final _examKey = GlobalKey<ExamPageState>();
   final _service = ScheduleService();
@@ -580,12 +585,12 @@ class _SchedulePageState extends State<SchedulePage> {
     return Scaffold(
       backgroundColor: const Color(0xfff5f7fb),
       appBar: AppBar(
-        title: Row(children: [_pageTab('课程表', false), _pageTab('考试信息', true)]),
+        title: Row(children: [_pageTab('课程表', 0), _pageTab('考试信息', 1), _pageTab('完成计划', 2)]),
         titleSpacing: 8,
         backgroundColor: Colors.white,
         surfaceTintColor: Colors.white,
         actions: [
-          if (!_examSelected)
+          if (_selectedPage == 0)
             IconButton(
               tooltip: '切换课表',
               onPressed: _changeScheduleUrl,
@@ -593,15 +598,17 @@ class _SchedulePageState extends State<SchedulePage> {
             ),
           IconButton(
             tooltip: '刷新',
-            onPressed: _examSelected
-                ? () => _examKey.currentState?.refresh()
-                : _loadInitial,
+            onPressed: switch (_selectedPage) {
+              1 => () => _examKey.currentState?.refresh(),
+              2 => () => _planKey.currentState?.refresh(),
+              _ => _loadInitial,
+            },
             icon: const Icon(Icons.refresh),
           ),
         ],
       ),
       body: IndexedStack(
-        index: _examSelected ? 1 : 0,
+        index: _selectedPage,
         children: [
           SafeArea(
             child: _config == null && schedule == null
@@ -631,29 +638,33 @@ class _SchedulePageState extends State<SchedulePage> {
                     ],
                   ),
           ),
-          if (_examOpened) ExamPage(key: _examKey) else const SizedBox.shrink(),
+          if (_examOpened) ExamPage(key: _examKey, service: _academicService) else const SizedBox.shrink(),
+          if (_planOpened) TrainingPlanPage(key: _planKey, service: _academicService) else const SizedBox.shrink(),
         ],
       ),
     );
   }
 
-  Widget _pageTab(String label, bool exam) => Flexible(
+  Widget _pageTab(String label, int page) => Flexible(
     child: TextButton(
       style: TextButton.styleFrom(
-        backgroundColor: _examSelected == exam
+        padding: const EdgeInsets.symmetric(horizontal: 4),
+        minimumSize: const Size(0, 40),
+        backgroundColor: _selectedPage == page
             ? const Color(0xffe8f0fe)
             : Colors.transparent,
-        foregroundColor: _examSelected == exam
+        foregroundColor: _selectedPage == page
             ? const Color(0xff2c7be5)
             : const Color(0xff5f6b7a),
       ),
       onPressed: () {
         setState(() {
-          _examSelected = exam;
-          _examOpened |= exam;
+          _selectedPage = page;
+          _examOpened |= page == 1;
+          _planOpened |= page == 2;
         });
         // 切回课程表时重新读取考试安排缓存，展示最新考试占位。
-        if (!exam) _loadExamSlots();
+        if (page == 0) _loadExamSlots();
       },
       child: Text(label, maxLines: 1, overflow: TextOverflow.ellipsis),
     ),
@@ -1761,3 +1772,4 @@ const _courseColors = [
 ];
 final Map<String, Color> _courseColorCache = {};
 int _nextColorIndex = 0;
+

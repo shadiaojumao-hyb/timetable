@@ -13,6 +13,8 @@
 migrate_working_dir/
 成绩.py
 时间.py
+学分.py
+training_plan.json
 # IntelliJ related
 *.iml
 *.ipr
